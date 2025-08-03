@@ -202,6 +202,8 @@ func (in *EVMInterpreter) Run(contract *Contract, input []byte, readOnly bool) (
 		logged  bool   // deferred EVMLogger should ignore already logged steps
 		res     []byte // result of the opcode execution function
 		debug   = in.evm.Config.Tracer != nil
+		// Opcode call counter
+		opcodeCounter = make(map[OpCode]int)
 	)
 	// Don't move this deferred function, it's placed before the OnOpcode-deferred method,
 	// so that it gets executed _after_: the OnOpcode needs the stacks before
@@ -209,6 +211,15 @@ func (in *EVMInterpreter) Run(contract *Contract, input []byte, readOnly bool) (
 	defer func() {
 		returnStack(stack)
 		mem.Free()
+	}()
+	// Report opcode execution counts
+	defer func() {
+		if len(opcodeCounter) > 0 {
+			log.Info("Opcode execution summary:")
+			for opcode, count := range opcodeCounter {
+				log.Info(fmt.Sprintf("%s: %d", opcode.String(), count))
+			}
+		}
 	}()
 	contract.Input = input
 
@@ -310,6 +321,10 @@ func (in *EVMInterpreter) Run(contract *Contract, input []byte, readOnly bool) (
 
 		// execute the operation
 		res, err = operation.execute(&pc, in, callContext)
+
+		// Count the opcode execution
+		opcodeCounter[op]++
+
 		if err != nil {
 			break
 		}
