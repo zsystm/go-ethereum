@@ -18,6 +18,8 @@ package vm
 
 import (
 	"fmt"
+	"sort"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/math"
@@ -202,8 +204,9 @@ func (in *EVMInterpreter) Run(contract *Contract, input []byte, readOnly bool) (
 		logged  bool   // deferred EVMLogger should ignore already logged steps
 		res     []byte // result of the opcode execution function
 		debug   = in.evm.Config.Tracer != nil
-		// Opcode call counter
-		opcodeCounter = make(map[OpCode]int)
+		// Opcode call counter and time tracking
+		opcodeCounter   = make(map[OpCode]int)
+		opcodeTimeTotal = make(map[OpCode]time.Duration)
 	)
 	// Don't move this deferred function, it's placed before the OnOpcode-deferred method,
 	// so that it gets executed _after_: the OnOpcode needs the stacks before
@@ -212,13 +215,48 @@ func (in *EVMInterpreter) Run(contract *Contract, input []byte, readOnly bool) (
 		returnStack(stack)
 		mem.Free()
 	}()
-	// Report opcode execution counts
+	// Report opcode execution counts and timing
 	defer func() {
 		if len(opcodeCounter) > 0 {
-			log.Info("Opcode execution summary:")
-			for opcode, count := range opcodeCounter {
-				log.Info(fmt.Sprintf("%s: %d", opcode.String(), count))
+			// Calculate totals
+			var totalOps int
+			var totalTime time.Duration
+			for op, count := range opcodeCounter {
+				totalOps += count
+				totalTime += opcodeTimeTotal[op]
 			}
+
+			// Create sorted list of opcodes for consistent output
+			type opcodeStats struct {
+				opcode OpCode
+				count  int
+				total  time.Duration
+				avg    time.Duration
+			}
+			var stats []opcodeStats
+			for op, count := range opcodeCounter {
+				total := opcodeTimeTotal[op]
+				avg := total / time.Duration(count)
+				stats = append(stats, opcodeStats{op, count, total, avg})
+			}
+			sort.Slice(stats, func(i, j int) bool {
+				return stats[i].opcode < stats[j].opcode
+			})
+
+			// Print formatted table
+			fmt.Println("\n=== Opcode Execution Summary ===")
+			fmt.Printf("%-15s %8s %15s %15s\n", "OPCODE", "COUNT", "TOTAL_TIME", "AVG_TIME")
+			fmt.Println("-------------------------------------------------------")
+			for _, stat := range stats {
+				fmt.Printf("%-15s %8d %15s %15s\n",
+					stat.opcode.String(),
+					stat.count,
+					stat.total.String(),
+					stat.avg.String())
+			}
+			fmt.Println("-------------------------------------------------------")
+			fmt.Printf("%-15s %8d %15s %15s\n", "TOTAL", totalOps, totalTime.String(), "N/A")
+			fmt.Println()
 		}
 	}()
 	contract.Input = input
@@ -320,10 +358,13 @@ func (in *EVMInterpreter) Run(contract *Contract, input []byte, readOnly bool) (
 		}
 
 		// execute the operation
+		startTime := time.Now()
 		res, err = operation.execute(&pc, in, callContext)
+		execTime := time.Since(startTime)
 
-		// Count the opcode execution
+		// Count the opcode execution and track time
 		opcodeCounter[op]++
+		opcodeTimeTotal[op] += execTime
 
 		if err != nil {
 			break
